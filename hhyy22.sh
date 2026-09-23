@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+
 # ============================================================
 # Hysteria 2 管理脚本 - 安全域名切换版
 #
@@ -21,6 +22,8 @@
 #   - 保留原端口 / 密码 / 邮箱 / 伪装网址
 #   - 查看节点配置时始终读取当前 config.yaml
 #   - VPS 重启后 Hysteria 自动启动
+#   - 支持 bash <(curl ...) 启动
+#   - 支持本地脚本启动
 # ============================================================
 
 set -Eeuo pipefail
@@ -30,6 +33,7 @@ set -Eeuo pipefail
 # ============================================================
 
 SERVICE="hysteria-server.service"
+
 CONFIG="/etc/hysteria/config.yaml"
 BACKUP_DIR="/etc/hysteria/backup"
 
@@ -40,6 +44,11 @@ HY2_CMD="/usr/local/bin/hy2"
 NODE_FILE="/root/hy2-node.txt"
 
 SYSTEMD_DROPIN="/etc/systemd/system/${SERVICE}.d/override.conf"
+
+# 当前脚本在 GitHub 上的位置
+# 当使用 bash <(curl ...) 启动时，$0 不是实际文件，
+# 因此需要从这里重新下载一份保存到 /usr/local/bin/hy2-manager。
+SCRIPT_URL="https://raw.githubusercontent.com/30yuanfenglou-hash/ciisdz/main/hhyy22.sh"
 
 DOMAIN=""
 PORT=""
@@ -83,8 +92,11 @@ pause() {
 # ============================================================
 
 require_root() {
+
     if [[ "${EUID}" -ne 0 ]]; then
+
         die "请使用 root 用户运行此脚本。"
+
     fi
 }
 
@@ -93,7 +105,9 @@ require_root() {
 # ============================================================
 
 command_exists() {
+
     command -v "$1" >/dev/null 2>&1
+
 }
 
 # ============================================================
@@ -105,13 +119,21 @@ install_dependencies() {
     local pm=""
 
     if command_exists apt-get; then
+
         pm="apt"
+
     elif command_exists dnf; then
+
         pm="dnf"
+
     elif command_exists yum; then
+
         pm="yum"
+
     else
+
         die "当前系统不支持。"
+
     fi
 
     blue "正在安装必要依赖..."
@@ -156,7 +178,9 @@ validate_domain() {
     [[ -n "$d" ]] || return 1
 
     if [[ "$d" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
+
         return 0
+
     fi
 
     return 1
@@ -179,15 +203,20 @@ validate_port() {
 
 # ============================================================
 # 密码生成
+#
+# 不再使用：
+# openssl | tr | head
+#
+# 避免 set -o pipefail 下出现 SIGPIPE。
 # ============================================================
 
 generate_password() {
 
-    openssl rand -base64 32 \
-        | tr -dc 'A-Za-z0-9' \
-        | head -c 24
+    local password=""
 
-    echo
+    password="$(openssl rand -hex 16)"
+
+    echo "$password"
 }
 
 # ============================================================
@@ -284,9 +313,11 @@ check_dns() {
     if [[ -z "$dns_ip" ]]; then
 
         red "DNS 检查失败。"
+
         yellow "请把 $domain 的 A 记录指向：$server_ip"
 
         return 1
+
     fi
 
     if [[ "$server_ip" == "$dns_ip" ]]; then
@@ -303,6 +334,7 @@ check_dns() {
         yellow "两者不一致。"
 
         return 1
+
     fi
 }
 
@@ -366,20 +398,49 @@ EOF
 
 # ============================================================
 # 安装 Hysteria
+#
+# 不再使用：
+# bash <(curl ...)
+#
+# 改成先下载到临时文件再执行。
 # ============================================================
 
 install_hysteria() {
 
+    local installer="/tmp/get-hy2.sh"
+
     blue "正在安装 / 更新 Hysteria 2..."
 
-    HYSTERIA_USER=root \
-        bash <(
-            curl -fsSL https://get.hy2.sh/
-        )
+    rm -f "$installer"
+
+    if ! curl -fsSL \
+        --retry 3 \
+        --connect-timeout 10 \
+        --max-time 120 \
+        https://get.hy2.sh/ \
+        -o "$installer"; then
+
+        rm -f "$installer"
+
+        die "无法下载 Hysteria 2 安装程序。"
+
+    fi
+
+    chmod +x "$installer"
+
+    if ! HYSTERIA_USER=root bash "$installer"; then
+
+        rm -f "$installer"
+
+        die "Hysteria 安装程序执行失败。"
+
+    fi
+
+    rm -f "$installer"
 
     if [[ ! -x "$HY2_BIN" ]]; then
 
-        die "Hysteria 安装失败。"
+        die "Hysteria 安装失败：没有找到 $HY2_BIN"
 
     fi
 
@@ -426,6 +487,8 @@ masquerade:
 disableUDP: false
 udpIdleTimeout: 60s
 EOF
+
+    chmod 600 "$CONFIG"
 }
 
 # ============================================================
@@ -583,7 +646,9 @@ wait_service_active() {
     while (( i < timeout )); do
 
         if systemctl is-active --quiet "$SERVICE"; then
+
             return 0
+
         fi
 
         sleep 1
@@ -661,7 +726,9 @@ wait_for_acme() {
     while (( elapsed < max_wait )); do
 
         if ! systemctl is-active --quiet "$SERVICE"; then
+
             return 1
+
         fi
 
         check_acme_result
@@ -670,11 +737,13 @@ wait_for_acme() {
         if [[ "$result" -eq 0 ]]; then
 
             green "检测到 ACME 证书申请成功。"
+
             return 0
 
         elif [[ "$result" -eq 1 ]]; then
 
             red "检测到 ACME 证书申请失败。"
+
             return 1
 
         fi
@@ -701,7 +770,9 @@ wait_for_acme() {
 show_acme_status() {
 
     echo
+
     green "================ ACME / 证书状态 ================"
+
     echo
 
     if ! systemctl is-active --quiet "$SERVICE"; then
@@ -742,6 +813,7 @@ show_acme_status() {
     echo "--------------------------------------------------"
 
     echo
+
     yellow "如果是刚刚更换域名，请给 ACME 一些时间完成申请。"
 }
 
@@ -759,16 +831,26 @@ show_v2rayn_node() {
     fi
 
     echo
+
     green "================ v2rayN 节点 ================"
+
     echo
+
     echo "当前域名：$DOMAIN"
     echo "当前端口：$PORT"
+
     echo
+
     echo "v2rayN URI："
+
     echo
+
     generate_uri
+
     echo
+
     green "=============================================="
+
     echo
 }
 
@@ -786,13 +868,21 @@ show_clash_verge_node() {
     fi
 
     echo
+
     green "============= Clash Verge / Mihomo ============="
+
     echo
+
     echo "当前域名：$DOMAIN"
+
     echo
+
     generate_clash_yaml
+
     echo
+
     green "================================================="
+
     echo
 }
 
@@ -803,7 +893,9 @@ show_clash_verge_node() {
 show_status() {
 
     echo
+
     green "================ Hysteria 状态 ================"
+
     echo
 
     systemctl status "$SERVICE" \
@@ -833,6 +925,7 @@ show_status() {
     fi
 
     echo
+
     echo "开机启动："
 
     if systemctl is-enabled "$SERVICE" \
@@ -867,7 +960,9 @@ show_status() {
 show_logs() {
 
     echo
+
     green "================ Hysteria 日志 ================"
+
     echo
 
     journalctl \
@@ -934,15 +1029,19 @@ change_domain() {
 
     local new_domain=""
     local backup_file=""
+    local acme_result=2
 
     echo
+
     green "=================================================="
     green "                更换 Hysteria 域名"
     green "=================================================="
+
     echo
 
     echo "当前域名：$old_domain"
     echo "当前端口：$old_port"
+
     echo
 
     read -rp "请输入新的域名： " new_domain
@@ -962,7 +1061,9 @@ change_domain() {
     fi
 
     echo
+
     yellow "新域名：$new_domain"
+
     echo
 
     yellow "第一步：检查 DNS..."
@@ -970,14 +1071,18 @@ change_domain() {
     if ! check_dns "$new_domain"; then
 
         echo
+
         red "DNS 检查没有通过。"
 
         echo
+
         echo "如果你刚刚修改 DNS，可能还没有生效。"
+
         echo
 
         read -rp \
-            "仍然继续尝试申请证书吗？[y/N]： " answer
+            "仍然继续尝试申请证书吗？[y/N]： " \
+            answer
 
         if [[ ! "$answer" =~ ^[Yy]$ ]]; then
 
@@ -998,6 +1103,7 @@ change_domain() {
     cp "$CONFIG" "$backup_file"
 
     green "旧配置已备份："
+
     echo "$backup_file"
 
     # --------------------------------------------------------
@@ -1020,8 +1126,11 @@ change_domain() {
     setup_systemd
 
     echo
+
     blue "第二步：写入新域名配置..."
+
     echo "新域名：$DOMAIN"
+
     echo
 
     # --------------------------------------------------------
@@ -1029,6 +1138,7 @@ change_domain() {
     # --------------------------------------------------------
 
     blue "第三步：重启 Hysteria..."
+
     echo
 
     systemctl restart "$SERVICE"
@@ -1042,6 +1152,7 @@ change_domain() {
         red "Hysteria 使用新域名启动失败。"
 
         echo
+
         red "正在自动恢复旧配置..."
 
         cp "$backup_file" "$CONFIG"
@@ -1052,7 +1163,9 @@ change_domain() {
             || true
 
         echo
+
         red "域名更换失败。"
+
         green "旧域名已恢复：$old_domain"
 
         return 1
@@ -1065,11 +1178,15 @@ change_domain() {
     # --------------------------------------------------------
 
     echo
+
     blue "第四步：等待新域名 ACME 证书..."
 
     set +e
+
     wait_for_acme
+
     acme_result=$?
+
     set -e
 
     # --------------------------------------------------------
@@ -1079,9 +1196,11 @@ change_domain() {
     if [[ "$acme_result" -eq 1 ]]; then
 
         echo
+
         red "新域名证书申请失败。"
 
         echo
+
         red "正在恢复旧域名..."
 
         cp "$backup_file" "$CONFIG"
@@ -1101,6 +1220,7 @@ change_domain() {
         else
 
             red "旧配置已写回，但服务未能正常启动。"
+
             red "请使用：$0 logs 查看日志。"
 
         fi
@@ -1111,7 +1231,7 @@ change_domain() {
     # --------------------------------------------------------
     # ACME 超时
     #
-    # 这里不直接恢复。
+    # 不直接恢复。
     #
     # 因为 ACME 有时候需要更长时间完成。
     # 如果 Hysteria 本身已经正常运行，则保留新配置。
@@ -1143,9 +1263,11 @@ change_domain() {
     save_node_info
 
     echo
+
     green "=================================================="
     green "              域名更换完成"
     green "=================================================="
+
     echo
 
     echo "旧域名：$old_domain"
@@ -1155,22 +1277,31 @@ change_domain() {
     echo "伪装网址：$MASQUERADE_URL"
 
     echo
+
     green "Hysteria 已经使用新域名配置。"
 
     echo
+
     echo "新的 v2rayN 节点："
+
     echo
+
     generate_uri
 
     echo
+
     echo "新的 Clash Verge / Mihomo 配置："
+
     echo
+
     generate_clash_yaml
 
     echo
+
     green "以后从菜单查看配置时，会自动显示当前新域名。"
 
     echo
+
     yellow "节点配置文件：$NODE_FILE"
 
     echo
@@ -1189,9 +1320,11 @@ install_or_configure() {
     install_hysteria
 
     echo
+
     green "=================================================="
     green "              Hysteria 2 初始配置"
     green "=================================================="
+
     echo
 
     read -rp \
@@ -1244,15 +1377,18 @@ install_or_configure() {
     PASSWORD="$(generate_password)"
 
     echo
+
     yellow "正在检查 DNS..."
 
     check_dns "$DOMAIN" || {
 
         echo
+
         yellow "DNS 检查没有通过。"
 
         read -rp \
-            "仍然继续安装吗？[y/N]： " answer
+            "仍然继续安装吗？[y/N]： " \
+            answer
 
         if [[ ! "$answer" =~ ^[Yy]$ ]]; then
 
@@ -1289,6 +1425,7 @@ install_or_configure() {
     # --------------------------------------------------------
 
     echo
+
     blue "正在启动 Hysteria..."
 
     systemctl restart "$SERVICE"
@@ -1303,6 +1440,7 @@ install_or_configure() {
             || true
 
         echo
+
         echo "最近日志："
 
         journalctl \
@@ -1319,9 +1457,11 @@ install_or_configure() {
     save_node_info
 
     echo
+
     green "=================================================="
     green "              Hysteria 2 安装完成"
     green "=================================================="
+
     echo
 
     echo "域名：$DOMAIN"
@@ -1329,15 +1469,21 @@ install_or_configure() {
     echo "密码：$PASSWORD"
 
     echo
+
     echo "v2rayN URI："
+
     echo
+
     generate_uri
 
     echo
+
     yellow "ACME 证书由 Hysteria 自动申请 / 续期。"
 
     echo
+
     yellow "请确认："
+
     echo "1. 域名 A 记录已经指向 VPS"
     echo "2. UDP ${PORT} 已放行"
     echo "3. 如果使用 Cloudflare，请确认相关 DNS / 代理设置符合证书验证要求"
@@ -1354,7 +1500,9 @@ uninstall_hysteria() {
     require_root
 
     echo
+
     red "即将卸载 Hysteria 2。"
+
     echo
 
     read -rp \
@@ -1380,9 +1528,13 @@ uninstall_hysteria() {
 
     rm -f "$HY2_CMD"
 
+    rm -f "$HY2_MANAGER"
+
     systemctl daemon-reload
 
     rm -rf /etc/hysteria
+
+    rm -f "$NODE_FILE"
 
     green "Hysteria 2 已卸载。"
 }
@@ -1435,6 +1587,7 @@ create_shortcut() {
 
     cat > "$HY2_CMD" <<'EOF'
 #!/usr/bin/env bash
+
 exec /usr/local/bin/hy2-manager "$@"
 EOF
 
@@ -1443,21 +1596,105 @@ EOF
 
 # ============================================================
 # 安装管理器本身
+#
+# 重点修复：
+#
+# 原来的：
+#
+# current_script="$(readlink -f "$0")"
+# cp "$current_script" "$HY2_MANAGER"
+#
+# 当使用：
+#
+# bash <(curl ...)
+#
+# $0 可能指向：
+#
+# /proc/xxxx/fd/pipe:[xxxxx]
+#
+# 这不是普通文件，所以 cp 会报：
+#
+# cp: cannot stat '/proc/.../fd/pipe:[...]'
+#
+# 现在：
+#
+# 1. 如果 $0 是真实文件 -> 直接复制
+# 2. 如果 $0 是 /dev/fd/ /proc/fd/ pipe -> 从 SCRIPT_URL 下载
 # ============================================================
 
 install_manager_command() {
 
     local current_script=""
+    local temp_manager=""
 
-    current_script="$(readlink -f "$0")"
+    mkdir -p "$(dirname "$HY2_MANAGER")"
 
-    if [[ "$current_script" != "$HY2_MANAGER" ]]; then
+    # --------------------------------------------------------
+    # 情况 1：
+    # $0 是真实存在的脚本文件
+    # --------------------------------------------------------
 
-        cp "$current_script" "$HY2_MANAGER"
+    if [[ -f "$0" ]]; then
 
-        chmod +x "$HY2_MANAGER"
+        current_script="$(readlink -f "$0" 2>/dev/null || true)"
+
+        if [[ -n "$current_script" ]] && \
+           [[ "$current_script" != "$HY2_MANAGER" ]]; then
+
+            cp "$current_script" "$HY2_MANAGER"
+
+            chmod +x "$HY2_MANAGER"
+
+        fi
+
+    else
+
+        # ----------------------------------------------------
+        # 情况 2：
+        # bash <(curl ...)
+        #
+        # 此时 $0 可能是 /dev/fd/... 或 /proc/.../pipe
+        #
+        # 不再 cp $0。
+        # 直接重新下载脚本保存为真正的文件。
+        # ----------------------------------------------------
+
+        if command_exists curl; then
+
+            temp_manager="${HY2_MANAGER}.tmp.$$"
+
+            if curl -fsSL \
+                --retry 3 \
+                --connect-timeout 10 \
+                --max-time 60 \
+                "$SCRIPT_URL" \
+                -o "$temp_manager"; then
+
+                if [[ -s "$temp_manager" ]]; then
+
+                    chmod +x "$temp_manager"
+
+                    mv -f "$temp_manager" "$HY2_MANAGER"
+
+                else
+
+                    rm -f "$temp_manager"
+
+                fi
+
+            else
+
+                rm -f "$temp_manager"
+
+            fi
+
+        fi
 
     fi
+
+    # --------------------------------------------------------
+    # 创建 hy2 快捷命令
+    # --------------------------------------------------------
 
     create_shortcut
 }
@@ -1473,9 +1710,11 @@ menu() {
         clear
 
         echo
+
         green "=================================================="
         green "              Hysteria 2 管理脚本"
         green "=================================================="
+
         echo
 
         if load_current_config 2>/dev/null; then
@@ -1500,6 +1739,7 @@ menu() {
         fi
 
         echo
+
         echo "  1. 安装 / 配置 Hysteria 2"
         echo "  2. 卸载 Hysteria 2"
         echo "  3. 更换域名并自动申请新证书"
@@ -1513,6 +1753,7 @@ menu() {
         echo "  0. 退出"
 
         echo
+
         echo "--------------------------------------------------"
 
         read -rp \
@@ -1645,10 +1886,15 @@ main() {
 
         *)
             echo
+
             echo "Hysteria 2 管理脚本"
+
             echo
+
             echo "用法："
+
             echo
+
             echo "  $0 install       安装 / 配置"
             echo "  $0 uninstall    卸载"
             echo "  $0 domain       更换域名"
@@ -1660,7 +1906,9 @@ main() {
             echo "  $0 restart      重启"
             echo "  $0 repair       修复开机启动"
             echo "  $0 menu         打开菜单"
+
             echo
+            ;;
 
     esac
 }
@@ -1668,5 +1916,7 @@ main() {
 # ============================================================
 # 启动
 # ============================================================
+
 install_manager_command
+
 main "$@"
